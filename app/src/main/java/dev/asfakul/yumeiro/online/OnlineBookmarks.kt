@@ -55,7 +55,10 @@ object OnlineBookmarks {
     fun ensureLoaded(context: Context) {
         if (loaded) return
         loaded = true
-        val f = File(context.applicationContext.filesDir, "online_bookmarks.json").also { file = it }
+        val f = dev.asfakul.yumeiro.profile.ProfileManager.dataFile(
+    context,
+    "online_bookmarks.json"
+).also { file = it }
         val a = runCatching { if (f.exists()) JSONObject(f.readText()).optJSONArray("items") else null }.getOrNull() ?: return
         _items.value = (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(::from) }.sortedByDescending { it.addedAt }
     }
