@@ -64,7 +64,7 @@ object OnlineHistory {
 
     fun progressKey(api: String, data: String) = "$api|$data"
 
-        @Synchronized
+    @Synchronized
     fun ensureLoaded(context: Context) {
         if (loaded) return
         loaded = true
