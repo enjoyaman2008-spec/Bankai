@@ -64,27 +64,56 @@ object OnlineHistory {
 
     fun progressKey(api: String, data: String) = "$api|$data"
 
-    @Synchronized
-    fun ensureLoaded(context: Context)
-    /**
- * Reloads history from the currently active profile.
- * Call this only from the central profile-switch coordinator.
- */
-@Synchronized
-fun reloadForActiveProfile(context: Context) {
-    loaded = false
-    file = null
-
-    _entries.value = emptyList()
-
-    progress.clear()
-
-    _version.value++
-
-    ensureLoaded(context)
-}{
+        @Synchronized
+    fun ensureLoaded(context: Context) {
         if (loaded) return
         loaded = true
+
+        val f = dev.asfakul.yumeiro.profile.ProfileManager.dataFile(
+            context,
+            "online_history.json"
+        ).also { file = it }
+
+        val o = runCatching {
+            if (f.exists()) JSONObject(f.readText()) else null
+        }.getOrNull() ?: return
+
+        val list = o.optJSONArray("titles")?.let { a ->
+            (0 until a.length()).mapNotNull {
+                a.optJSONObject(it)?.let(::entryFrom)
+            }
+        }.orEmpty()
+
+        _entries.value = list.sortedByDescending { it.updatedAt }
+
+        o.optJSONObject("progress")?.let { p ->
+            p.keys().forEach { k ->
+                p.optJSONArray(k)?.let { v ->
+                    progress[k] = Progress(
+                        v.optLong(0),
+                        v.optLong(1),
+                        v.optLong(2)
+                    )
+                }
+            }
+        }
+
+        _version.value++
+    }
+
+    /**
+     * Reloads history from the currently active profile.
+     * Call this only from the central profile-switch coordinator.
+     */
+    @Synchronized
+    fun reloadForActiveProfile(context: Context) {
+        loaded = false
+        file = null
+        _entries.value = emptyList()
+        progress.clear()
+        _version.value++
+        ensureLoaded(context)
+    }
         val f = dev.asfakul.yumeiro.profile.ProfileManager.dataFile(
     context,
     "online_history.json"
