@@ -61,10 +61,18 @@ object OnlineBookmarks {
 ).also { file = it }
         val a = runCatching { if (f.exists()) JSONObject(f.readText()).optJSONArray("items") else null }.getOrNull() ?: return
         _items.value = (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(::from) }.sortedByDescending { it.addedAt }
-    }val f = dev.asfakul.yumeiro.profile.ProfileManager.dataFile(
-    context,
-    "online_bookmarks.json"
-).also { file = it }
+    
+    /**
+     * Reloads bookmarks from the currently active profile.
+     * Call this only from the central profile-switch coordinator.
+     */
+    @Synchronized
+    fun reloadForActiveProfile(context: Context) {
+        loaded = false
+        file = null
+        _items.value = emptyList()
+        ensureLoaded(context)
+    }
 
     fun get(api: String, url: String): Bookmark? = _items.value.firstOrNull { it.api == api && it.url == url }
     fun isSaved(api: String, url: String): Boolean = get(api, url) != null
