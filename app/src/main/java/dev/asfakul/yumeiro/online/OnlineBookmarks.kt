@@ -62,7 +62,7 @@ object OnlineBookmarks {
         val a = runCatching { if (f.exists()) JSONObject(f.readText()).optJSONArray("items") else null }.getOrNull() ?: return
         _items.value = (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(::from) }.sortedByDescending { it.addedAt }
     
-    }
+    } 
     /**
      * Reloads bookmarks from the currently active profile.
      * Call this only from the central profile-switch coordinator.
