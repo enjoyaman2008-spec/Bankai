@@ -19,6 +19,9 @@ class MTApplication : Application(), ImageLoaderFactory {
         if (dev.asfakul.yumeiro.backup.Restart.isRestartProcess(this)) return
         // Round 12: a staged restore / reset is applied before anything reads a setting or file.
         dev.asfakul.yumeiro.backup.PendingRestore.applyIfAny(this)
+        
+        // Initialize profiles before profile-aware storage is loaded.
+dev.asfakul.yumeiro.profile.ProfileManager.initialize(this)
         // Round 2: crash reports are written to the phone (Settings → Crash reports) before anything else can fail.
         runCatching { dev.asfakul.yumeiro.diagnostics.CrashLog.install(this) }
         dev.asfakul.yumeiro.cache.DataCache.init(this)
