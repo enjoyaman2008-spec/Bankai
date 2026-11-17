@@ -101,10 +101,20 @@ object OnlineHistory {
         _version.value++
     }
 
-    /**
+        /**
      * Reloads history from the currently active profile.
      * Call this only from the central profile-switch coordinator.
      */
+    @Synchronized
+    fun reloadForActiveProfile(context: Context) {
+        loaded = false
+        file = null
+        _entries.value = emptyList()
+        progress.clear()
+        _version.value++
+        ensureLoaded(context)
+    }
+
     fun progressOf(api: String, data: String): Progress? = synchronized(this) { progress[progressKey(api, data)] }
 
     fun entry(api: String, url: String): Entry? = _entries.value.firstOrNull { it.api == api && it.url == url }
