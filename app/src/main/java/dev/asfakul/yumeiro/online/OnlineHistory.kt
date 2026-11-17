@@ -68,7 +68,10 @@ object OnlineHistory {
     fun ensureLoaded(context: Context) {
         if (loaded) return
         loaded = true
-        val f = File(context.applicationContext.filesDir, "online_history.json").also { file = it }
+        val f = dev.asfakul.yumeiro.profile.ProfileManager.dataFile(
+    context,
+    "online_history.json"
+).also { file = it }
         val o = runCatching { if (f.exists()) JSONObject(f.readText()) else null }.getOrNull() ?: return
         val list = o.optJSONArray("titles")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(::entryFrom) } }.orEmpty()
         _entries.value = list.sortedByDescending { it.updatedAt }
