@@ -21,7 +21,7 @@ class MTApplication : Application(), ImageLoaderFactory {
         dev.asfakul.yumeiro.backup.PendingRestore.applyIfAny(this)
         
         // Initialize profiles before profile-aware storage is loaded.
-    dev.asfakul.yumeiro.profile.ProfileManager.initialize(this)
+        dev.asfakul.yumeiro.profile.ProfileManager.initialize(this)
         // Round 2: crash reports are written to the phone (Settings → Crash reports) before anything else can fail.
         runCatching { dev.asfakul.yumeiro.diagnostics.CrashLog.install(this) }
         dev.asfakul.yumeiro.cache.DataCache.init(this)
