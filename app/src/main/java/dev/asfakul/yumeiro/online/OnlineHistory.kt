@@ -105,28 +105,6 @@ object OnlineHistory {
      * Reloads history from the currently active profile.
      * Call this only from the central profile-switch coordinator.
      */
-    @Synchronized
-    fun reloadForActiveProfile(context: Context) {
-        loaded = false
-        file = null
-        _entries.value = emptyList()
-        progress.clear()
-        _version.value++
-        ensureLoaded(context)
-    }
-        val f = dev.asfakul.yumeiro.profile.ProfileManager.dataFile(
-    context,
-    "online_history.json"
-).also { file = it }
-        val o = runCatching { if (f.exists()) JSONObject(f.readText()) else null }.getOrNull() ?: return
-        val list = o.optJSONArray("titles")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(::entryFrom) } }.orEmpty()
-        _entries.value = list.sortedByDescending { it.updatedAt }
-        o.optJSONObject("progress")?.let { p ->
-            p.keys().forEach { k -> p.optJSONArray(k)?.let { v -> progress[k] = Progress(v.optLong(0), v.optLong(1), v.optLong(2)) } }
-        }
-        _version.value++
-    }
-
     fun progressOf(api: String, data: String): Progress? = synchronized(this) { progress[progressKey(api, data)] }
 
     fun entry(api: String, url: String): Entry? = _entries.value.firstOrNull { it.api == api && it.url == url }
