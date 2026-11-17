@@ -1,3 +1,4 @@
+
 /*
  * Yumeiro — Copyright (C) 2026 siamform
  * Licensed under the GNU General Public License v3.0 or later. See LICENSE and TRADEMARKS.md.
@@ -78,7 +79,7 @@ object OnlineSettings {
             Context.MODE_PRIVATE
         )
 
-        // Copy old global preferences into Default only. Keep the old file intact.
+        // Copy old global preferences into Default only.
         if (profileId == ProfileManager.DEFAULT_PROFILE_ID) {
             migrateLegacySettings(app, profilePrefs)
             migrateLegacySecrets(app, secretPrefs, profileId)
@@ -161,10 +162,10 @@ object OnlineSettings {
     }
 
     /**
-     * Copy legacy global secrets into Default's namespace.
-     * Existing encrypted values are copied without decrypting or re-encrypting.
-     * Legacy plaintext is encrypted before it is stored.
-     * Original legacy entries are deliberately preserved.
+     * Migrate legacy secrets into Default's namespace.
+     * Encrypted values are copied unchanged.
+     * Plaintext values are encrypted before storage and removed
+     * from their old location.
      */
     private fun migrateLegacySecrets(
         context: Context,
@@ -181,50 +182,51 @@ object OnlineSettings {
             Context.MODE_PRIVATE
         )
 
-        val names = linkedMapOf<String, String>()
+        fun migrateFrom(
+            source: SharedPreferences,
+            isLegacySecret: (String) -> Boolean
+        ) {
+            source.all.forEach { (name, value) ->
+                if (value !is String || !isLegacySecret(name)) return@forEach
 
-        legacySecrets.all.forEach { (name, value) ->
-            if (
-                value is String &&
-                !name.startsWith("profile:")
-            ) {
-                names[name] = value
+                val destinationKey = secretStorageKey(profileId, name)
+
+                if (!destination.contains(destinationKey) &&
+                    !volatileSecrets.containsKey(destinationKey)
+                ) {
+                    val safeValue =
+                        if (dev.asfakul.yumeiro.security.SecretBox.isSealed(value)) {
+                            value
+                        } else {
+                            dev.asfakul.yumeiro.security.SecretBox.seal(value)
+                        }
+
+                    if (safeValue != null) {
+                        destination.edit()
+                            .putString(destinationKey, safeValue)
+                            .apply()
+                    } else {
+                        // Keep the value in memory only if encryption is unavailable.
+                        volatileSecrets[destinationKey] = value
+                    }
+                }
+
+                // Never leave a legacy plaintext secret stored on disk.
+                if (!dev.asfakul.yumeiro.security.SecretBox.isSealed(value)) {
+                    source.edit().remove(name).apply()
+                }
             }
         }
 
-        legacySettings.all.forEach { (name, value) ->
-            if (
-                value is String &&
-                (name == "os_key" ||
-                    name == "subdl_key" ||
-                    name == "subsource_key" ||
-                    name.startsWith("secret:"))
-            ) {
-                names.putIfAbsent(name, value)
-            }
+        migrateFrom(legacySecrets) { name ->
+            !name.startsWith("profile:")
         }
 
-        names.forEach { (name, stored) ->
-            val destinationKey = secretStorageKey(profileId, name)
-
-            if (destination.contains(destinationKey)) return@forEach
-
-            val safeValue = if (
-                dev.asfakul.yumeiro.security.SecretBox.isSealed(stored)
-            ) {
-                stored
-            } else {
-                dev.asfakul.yumeiro.security.SecretBox.seal(stored)
-            }
-
-            if (safeValue != null) {
-                destination.edit()
-                    .putString(destinationKey, safeValue)
-                    .apply()
-            } else {
-                // Keystore unavailable: keep this copy in memory only.
-                volatileSecrets[destinationKey] = stored
-            }
+        migrateFrom(legacySettings) { name ->
+            name == "os_key" ||
+                name == "subdl_key" ||
+                name == "subsource_key" ||
+                name.startsWith("secret:")
         }
     }
 
