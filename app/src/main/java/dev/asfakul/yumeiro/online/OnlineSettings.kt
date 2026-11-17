@@ -10,113 +10,334 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import dev.asfakul.yumeiro.profile.ProfileManager
 
-/** Preferences for online videos. */
+/** Preferences for online videos, isolated by active profile. */
 object OnlineSettings {
     private var prefs: SharedPreferences? = null
-    /** Account tokens and API keys. Kept in their own file so backups can exclude them. */
     private var secrets: SharedPreferences? = null
 
+    @Volatile
+    private var loadedProfileId: String? = null
+
     private val _adult = MutableStateFlow(false)
-    /** Show 18+ extensions and titles (off by default; turning on needs an age confirmation). */
     val adult: StateFlow<Boolean> = _adult.asStateFlow()
 
     private val _adultPrivate = MutableStateFlow(true)
-    /**
-     * Keep 18+ activity private: watched 18+ titles are still saved (resume works, search finds
-     * them) but never appear in feeds, suggestions, Continue watching or Home.
-     */
     val adultPrivate: StateFlow<Boolean> = _adultPrivate.asStateFlow()
 
     private val _skipIntro = MutableStateFlow(true)
-    /** Offer "Skip intro / outro" on anime (AniSkip). */
     val skipIntro: StateFlow<Boolean> = _skipIntro.asStateFlow()
 
     private val _autoSkip = MutableStateFlow(false)
-    /** Skip intros/outros without asking. */
     val autoSkip: StateFlow<Boolean> = _autoSkip.asStateFlow()
 
     private val _subtitleLang = MutableStateFlow("en")
-    /** Preferred language for online subtitle search (ISO 639-1). */
     val subtitleLang: StateFlow<String> = _subtitleLang.asStateFlow()
 
     private val _openSubtitlesKey = MutableStateFlow("")
-    /** Optional OpenSubtitles.com API key (adds OpenSubtitles results to subtitle search). */
     val openSubtitlesKey: StateFlow<String> = _openSubtitlesKey.asStateFlow()
 
     private val _subdlKey = MutableStateFlow("")
-    /** Optional free SubDL API key (adds SubDL results to subtitle search). Stored encrypted. */
     val subdlKey: StateFlow<String> = _subdlKey.asStateFlow()
 
     private val _subsourceKey = MutableStateFlow("")
-    /** Optional free SubSource API key (adds SubSource results to subtitle search). Stored encrypted. */
     val subsourceKey: StateFlow<String> = _subsourceKey.asStateFlow()
 
+    /** Session-only secrets are never written in plaintext. */
+    private val volatileSecrets =
+        java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun activeProfileId(): String =
+        ProfileManager.activeProfile.value?.id
+            ?: error("ProfileManager must be initialized first")
+
+    private fun secretStorageKey(profileId: String, name: String): String =
+        "profile:$profileId:$name"
+
+    @Synchronized
     fun init(context: Context) {
-        if (prefs != null) return
-        val p = context.applicationContext.getSharedPreferences("online_settings", Context.MODE_PRIVATE).also { prefs = it }
-        val s = context.applicationContext.getSharedPreferences(SECRETS_FILE, Context.MODE_PRIVATE).also { secrets = it }
-        migrateSecrets(p, s)
-        _adult.value = p.getBoolean("adult", false)
-        _adultPrivate.value = p.getBoolean("adult_private", true)
-        _skipIntro.value = p.getBoolean("skip_intro", true)
-        _autoSkip.value = p.getBoolean("auto_skip", false)
-        _subtitleLang.value = p.getString("subtitle_lang", null) ?: java.util.Locale.getDefault().language.ifBlank { "en" }
+        val app = context.applicationContext
+        val profileId = activeProfileId()
+
+        if (loadedProfileId == profileId && prefs != null) return
+
+        // A profile change must never retain the previous profile's in-memory secrets.
+        volatileSecrets.clear()
+        prefs = null
+        secrets = null
+        loadedProfileId = null
+
+        val profilePrefs = app.getSharedPreferences(
+            "online_settings_$profileId",
+            Context.MODE_PRIVATE
+        )
+
+        val secretPrefs = app.getSharedPreferences(
+            SECRETS_FILE,
+            Context.MODE_PRIVATE
+        )
+
+        // Copy old global preferences into Default only. Keep the old file intact.
+        if (profileId == ProfileManager.DEFAULT_PROFILE_ID) {
+            migrateLegacySettings(app, profilePrefs)
+            migrateLegacySecrets(app, secretPrefs, profileId)
+        }
+
+        prefs = profilePrefs
+        secrets = secretPrefs
+
+        _adult.value = profilePrefs.getBoolean("adult", false)
+        _adultPrivate.value = profilePrefs.getBoolean("adult_private", true)
+        _skipIntro.value = profilePrefs.getBoolean("skip_intro", true)
+        _autoSkip.value = profilePrefs.getBoolean("auto_skip", false)
+        _subtitleLang.value =
+            profilePrefs.getString("subtitle_lang", null)
+                ?: java.util.Locale.getDefault().language.ifBlank { "en" }
+
+        loadedProfileId = profileId
+
         _openSubtitlesKey.value = readSecret("os_key").orEmpty()
         _subdlKey.value = readSecret("subdl_key").orEmpty()
         _subsourceKey.value = readSecret("subsource_key").orEmpty()
     }
 
-    fun setAdult(context: Context, v: Boolean) { init(context); _adult.value = v; prefs?.edit()?.putBoolean("adult", v)?.apply(); OnlineRepository.clearCaches() }
-    fun setAdultPrivate(context: Context, v: Boolean) { init(context); _adultPrivate.value = v; prefs?.edit()?.putBoolean("adult_private", v)?.apply() }
-    fun setSkipIntro(context: Context, v: Boolean) { init(context); _skipIntro.value = v; prefs?.edit()?.putBoolean("skip_intro", v)?.apply() }
-    fun setAutoSkip(context: Context, v: Boolean) { init(context); _autoSkip.value = v; prefs?.edit()?.putBoolean("auto_skip", v)?.apply() }
-    fun setSubtitleLang(context: Context, v: String) { init(context); _subtitleLang.value = v; prefs?.edit()?.putString("subtitle_lang", v)?.apply() }
-    fun setOpenSubtitlesKey(context: Context, v: String) { init(context); _openSubtitlesKey.value = v.trim(); writeSecret("os_key", v.trim()) }
-    fun setSubdlKey(context: Context, v: String) { init(context); _subdlKey.value = v.trim(); writeSecret("subdl_key", v.trim()) }
-    fun setSubsourceKey(context: Context, v: String) { init(context); _subsourceKey.value = v.trim(); writeSecret("subsource_key", v.trim()) }
+    /**
+     * Reload after the central profile-switch coordinator changes profiles.
+     * Do not call this directly from profile UI.
+     */
+    @Synchronized
+    fun reloadForActiveProfile(context: Context) {
+        prefs = null
+        secrets = null
+        loadedProfileId = null
+        volatileSecrets.clear()
 
-    /** Small secrets store for sync accounts (tokens). */
-    fun secret(key: String): String? = readSecret("secret:$key")
+        _adult.value = false
+        _adultPrivate.value = true
+        _skipIntro.value = true
+        _autoSkip.value = false
+        _subtitleLang.value =
+            java.util.Locale.getDefault().language.ifBlank { "en" }
+
+        _openSubtitlesKey.value = ""
+        _subdlKey.value = ""
+        _subsourceKey.value = ""
+
+        init(context)
+    }
+
+    private fun migrateLegacySettings(
+        context: Context,
+        destination: SharedPreferences
+    ) {
+        val legacy = context.getSharedPreferences(
+            LEGACY_SETTINGS_FILE,
+            Context.MODE_PRIVATE
+        )
+
+        val keys = listOf(
+            "adult",
+            "adult_private",
+            "skip_intro",
+            "auto_skip",
+            "subtitle_lang"
+        )
+
+        val edit = destination.edit()
+        var changed = false
+
+        keys.forEach { key ->
+            if (!destination.contains(key) && legacy.contains(key)) {
+                when (val value = legacy.all[key]) {
+                    is Boolean -> edit.putBoolean(key, value)
+                    is String -> edit.putString(key, value)
+                }
+                changed = true
+            }
+        }
+
+        if (changed) edit.apply()
+    }
+
+    /**
+     * Copy legacy global secrets into Default's namespace.
+     * Existing encrypted values are copied without decrypting or re-encrypting.
+     * Legacy plaintext is encrypted before it is stored.
+     * Original legacy entries are deliberately preserved.
+     */
+    private fun migrateLegacySecrets(
+        context: Context,
+        destination: SharedPreferences,
+        profileId: String
+    ) {
+        val legacySettings = context.getSharedPreferences(
+            LEGACY_SETTINGS_FILE,
+            Context.MODE_PRIVATE
+        )
+
+        val legacySecrets = context.getSharedPreferences(
+            SECRETS_FILE,
+            Context.MODE_PRIVATE
+        )
+
+        val names = linkedMapOf<String, String>()
+
+        legacySecrets.all.forEach { (name, value) ->
+            if (
+                value is String &&
+                !name.startsWith("profile:")
+            ) {
+                names[name] = value
+            }
+        }
+
+        legacySettings.all.forEach { (name, value) ->
+            if (
+                value is String &&
+                (name == "os_key" ||
+                    name == "subdl_key" ||
+                    name == "subsource_key" ||
+                    name.startsWith("secret:"))
+            ) {
+                names.putIfAbsent(name, value)
+            }
+        }
+
+        names.forEach { (name, stored) ->
+            val destinationKey = secretStorageKey(profileId, name)
+
+            if (destination.contains(destinationKey)) return@forEach
+
+            val safeValue = if (
+                dev.asfakul.yumeiro.security.SecretBox.isSealed(stored)
+            ) {
+                stored
+            } else {
+                dev.asfakul.yumeiro.security.SecretBox.seal(stored)
+            }
+
+            if (safeValue != null) {
+                destination.edit()
+                    .putString(destinationKey, safeValue)
+                    .apply()
+            } else {
+                // Keystore unavailable: keep this copy in memory only.
+                volatileSecrets[destinationKey] = stored
+            }
+        }
+    }
+
+    fun setAdult(context: Context, v: Boolean) {
+        init(context)
+        _adult.value = v
+        prefs?.edit()?.putBoolean("adult", v)?.apply()
+        OnlineRepository.clearCaches()
+    }
+
+    fun setAdultPrivate(context: Context, v: Boolean) {
+        init(context)
+        _adultPrivate.value = v
+        prefs?.edit()?.putBoolean("adult_private", v)?.apply()
+    }
+
+    fun setSkipIntro(context: Context, v: Boolean) {
+        init(context)
+        _skipIntro.value = v
+        prefs?.edit()?.putBoolean("skip_intro", v)?.apply()
+    }
+
+    fun setAutoSkip(context: Context, v: Boolean) {
+        init(context)
+        _autoSkip.value = v
+        prefs?.edit()?.putBoolean("auto_skip", v)?.apply()
+    }
+
+    fun setSubtitleLang(context: Context, v: String) {
+        init(context)
+        _subtitleLang.value = v
+        prefs?.edit()?.putString("subtitle_lang", v)?.apply()
+    }
+
+    fun setOpenSubtitlesKey(context: Context, v: String) {
+        init(context)
+        val value = v.trim()
+        _openSubtitlesKey.value = value
+        writeSecret("os_key", value)
+    }
+
+    fun setSubdlKey(context: Context, v: String) {
+        init(context)
+        val value = v.trim()
+        _subdlKey.value = value
+        writeSecret("subdl_key", value)
+    }
+
+    fun setSubsourceKey(context: Context, v: String) {
+        init(context)
+        val value = v.trim()
+        _subsourceKey.value = value
+        writeSecret("subsource_key", value)
+    }
+
+    /** Small encrypted secrets store for sync accounts. */
+    fun secret(key: String): String? =
+        readSecret("secret:$key")
+
     fun setSecret(context: Context, key: String, value: String?) {
         init(context)
         writeSecret("secret:$key", value)
     }
 
-    /** Session-only copies, used when the Keystore can't encrypt. Secrets are never written in plaintext. */
-    private val volatileSecrets = java.util.concurrent.ConcurrentHashMap<String, String>()
-
     private fun readSecret(name: String): String? {
-        volatileSecrets[name]?.let { return it }
-        val stored = secrets?.getString(name, null) ?: return null
-        if (dev.asfakul.yumeiro.security.SecretBox.isSealed(stored)) return dev.asfakul.yumeiro.security.SecretBox.open(stored)
-        // Legacy plaintext from older versions: encrypt it in place (or drop it from disk if the Keystore fails).
+        val profileId = loadedProfileId ?: return null
+        val storageKey = secretStorageKey(profileId, name)
+
+        volatileSecrets[storageKey]?.let { return it }
+
+        val stored = secrets?.getString(storageKey, null) ?: return null
+
+        if (dev.asfakul.yumeiro.security.SecretBox.isSealed(stored)) {
+            return dev.asfakul.yumeiro.security.SecretBox.open(stored)
+        }
+
+        // Repair a plaintext value if one is encountered.
         writeSecret(name, stored)
         return stored
     }
 
     private fun writeSecret(name: String, value: String?) {
-        val p = secrets ?: return
-        if (value.isNullOrBlank()) { volatileSecrets.remove(name); p.edit().remove(name).apply(); return }
+        val profileId = loadedProfileId ?: return
+        val storage = secrets ?: return
+        val storageKey = secretStorageKey(profileId, name)
+
+        if (value.isNullOrBlank()) {
+            volatileSecrets.remove(storageKey)
+            storage.edit().remove(storageKey).apply()
+            return
+        }
+
         val sealed = dev.asfakul.yumeiro.security.SecretBox.seal(value)
-        if (sealed != null) { volatileSecrets.remove(name); p.edit().putString(name, sealed).apply() }
-        else { volatileSecrets[name] = value; p.edit().remove(name).apply() }
+
+        if (sealed != null) {
+            volatileSecrets.remove(storageKey)
+            storage.edit().putString(storageKey, sealed).apply()
+        } else {
+            volatileSecrets[storageKey] = value
+            storage.edit().remove(storageKey).apply()
+        }
     }
 
     @androidx.annotation.VisibleForTesting
-    internal fun resetForTests() { prefs = null; secrets = null; volatileSecrets.clear() }
-
-    /** Same name as in res/xml/backup_rules.xml and data_extraction_rules.xml. */
-    private const val SECRETS_FILE = "online_secrets"
-
-    /**
-     * One-time move of tokens/keys written by older versions into [SECRETS_FILE], encrypted.
-     * Also encrypts any plaintext left in [SECRETS_FILE] by an interrupted migration.
-     */
-    private fun migrateSecrets(from: SharedPreferences, to: SharedPreferences) {
-        val legacy = from.all.filter { (k, v) -> v is String && (k.startsWith("secret:") || k == "os_key") }
-        legacy.forEach { (k, v) -> if (!to.contains(k)) writeSecret(k, v as String) }
-        if (legacy.isNotEmpty()) from.edit().apply { legacy.keys.forEach(::remove) }.apply()
-        to.all.forEach { (k, v) -> if (v is String && !dev.asfakul.yumeiro.security.SecretBox.isSealed(v)) writeSecret(k, v) }
+    internal fun resetForTests() {
+        prefs = null
+        secrets = null
+        loadedProfileId = null
+        volatileSecrets.clear()
     }
+
+    private const val LEGACY_SETTINGS_FILE = "online_settings"
+
+    /** Same file name excluded by Android backup rules. */
+    private const val SECRETS_FILE = "online_secrets"
 }
