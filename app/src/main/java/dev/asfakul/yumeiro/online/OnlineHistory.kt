@@ -65,7 +65,24 @@ object OnlineHistory {
     fun progressKey(api: String, data: String) = "$api|$data"
 
     @Synchronized
-    fun ensureLoaded(context: Context) {
+    fun ensureLoaded(context: Context)
+    /**
+ * Reloads history from the currently active profile.
+ * Call this only from the central profile-switch coordinator.
+ */
+@Synchronized
+fun reloadForActiveProfile(context: Context) {
+    loaded = false
+    file = null
+
+    _entries.value = emptyList()
+
+    progress.clear()
+
+    _version.value++
+
+    ensureLoaded(context)
+}{
         if (loaded) return
         loaded = true
         val f = dev.asfakul.yumeiro.profile.ProfileManager.dataFile(
