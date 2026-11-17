@@ -115,6 +115,27 @@ object ProfileManager {
         return File(profileDir(context, profile.id), fileName)
     }
 
+    /**
+     * Returns a data file belonging to a specific profile,
+     * regardless of which profile is currently active.
+     */
+    fun dataFileForProfile(
+        context: Context,
+        profileId: String,
+        fileName: String
+    ): File {
+        require(
+            fileName.isNotBlank() &&
+                fileName == File(fileName).name &&
+                fileName != "." &&
+                fileName != ".."
+        ) {
+            "Invalid data file name"
+        }
+
+        return File(profileDir(context, profileId), fileName)
+    }
+
     fun createProfile(context: Context, name: String): Profile {
         synchronized(lock) {
             checkInitialized()
